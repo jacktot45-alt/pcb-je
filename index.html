@@ -1101,7 +1101,7 @@ function buildProps(){
   if(!state.selection.length){
     pp.append(el('div',{class:'hint',html:
       state.tab==='sch'
-      ? 'Selecteer een object om te bewerken.<br><br><b>Tips</b><br>• <b>Uit onderdelen-DB</b> (links): tik een partnummer in of kies er een, en plaats het meteen — symbool + waarde + LCSC-koppeling worden ingevuld.<br>• Of kies een kaal symbool en tik op het canvas.<br>• Draad-tool: tik pin→pin, dubbeltik = klaar.<br>• <span class="kbd">R</span> draaien, <span class="kbd">Del</span> verwijderen, <span class="kbd">F</span> fit.'
+      ? 'Selecteer een object om te bewerken.<br><br><b>Tips</b><br>• <b>Uit onderdelen-DB</b> (links): plak een <b>LCSC-nummer</b> (bv. C49678) of zoek, en plaats het meteen — type, waarde, footprint en prijs worden automatisch opgehaald.<br>• Of kies een kaal symbool en tik op het canvas.<br>• Draad-tool: tik pin→pin, dubbeltik = klaar.<br>• <span class="kbd">R</span> draaien, <span class="kbd">Del</span> verwijderen, <span class="kbd">F</span> fit.'
       : 'Selecteer een footprint of trace.<br><br>• "Genereer footprints" maakt footprints uit je schema.<br>• Trace-tool: tik pad→pad.<br>• Ratsnest = grijze stippellijnen tonen nog te verbinden netten.<br>• <span class="kbd">R</span> draaien.'}));
     // net summary
     if(state.tab==='sch'){ const n=nets();
@@ -1354,7 +1354,8 @@ function openImportCatalog(refresh){
     '(IndexedDB) bewaard: honderdduizenden onderdelen, daarna volledig <b>offline</b>. '+
     'Niets wordt geüpload. Kolommen worden automatisch herkend (LCSC #, MFR.Part, Package, '+
     'Category, Manufacturer, Description, Price). Footprint/symbool-mapping is best-effort — '+
-    'controleer voor productie altijd op lcsc.com.'}));
+    'controleer voor productie altijd op lcsc.com. Geen CSV? Je kunt ook losse '+
+    'onderdelen toevoegen via hun <b>LCSC-nummer</b> (knop “Direct via LCSC #”).'}));
   const count=el('div',{class:'hint'}); body.append(count);
   const refreshCount=()=>catalogCount().then(n=>count.textContent=
     'Nu in catalogus: '+n.toLocaleString('nl-NL')+' onderdelen'); refreshCount();
@@ -1409,6 +1410,43 @@ async function mergedParts(q,limit){
     .filter(p=>!seen.has((p.part||'').toUpperCase()));
   return {inMem,cat};
 }
+// Resolve a footprint dropdown to a value, adding an "(auto)" option when the
+// detected footprint isn't one of the built-in library entries.
+function ensureFp(sel,val){ if(!val) return;
+  if(![...sel.options].some(o=>o.value===val)) sel.append(el('option',{value:val,text:val+' (auto)'}));
+  sel.value=val; }
+
+/* Look up one LCSC part number online and normalise it to our part shape.
+   Uses EasyEDA's public component endpoint (the same data LCSC/JLCPCB expose) so
+   a single part can be added without importing the whole catalog. Runs in the
+   user's browser; if the network or CORS blocks it, callers fall back to the
+   imported catalog or to manual package entry. */
+async function lookupLcscOnline(code){
+  code=(code||'').trim().toUpperCase();
+  if(!/^C\d+$/.test(code)) throw new Error('ongeldig nummer');
+  const url='https://easyeda.com/api/products/'+encodeURIComponent(code)+'/components?version=6.4.19.5';
+  const ctrl=new AbortController(); const tm=setTimeout(()=>ctrl.abort(),12000);
+  let res;
+  try{ res=await fetch(url,{headers:{Accept:'application/json'},signal:ctrl.signal}); }
+  catch(e){ throw new Error('geen verbinding (offline of geblokkeerd)'); }
+  finally{ clearTimeout(tm); }
+  if(!res.ok) throw new Error('LCSC status '+res.status);
+  let j; try{ j=await res.json(); }catch(e){ throw new Error('onverwacht antwoord'); }
+  const r=j&&j.result; if(!r) throw new Error('niet gevonden bij LCSC');
+  const cp=(r.dataStr&&r.dataStr.head&&r.dataStr.head.c_para)||{};
+  const pkg=(r.packageDetail&&r.packageDetail.title)||cp.package||cp.Package||'';
+  const mfr=cp['Manufacturer Part']||cp['Manufacturer Part Number']||r.title||'';
+  const desc=r.description||r.title||mfr||'';
+  let price=0;
+  if(r.szlcsc&&r.szlcsc.price!=null) price=parseFloat(r.szlcsc.price)||0;
+  else if(r.lcsc&&Array.isArray(r.lcsc.price)&&r.lcsc.price.length)
+    price=parseFloat(r.lcsc.price[r.lcsc.price.length-1].price)||0;
+  const cat=catFromText(mfr+' '+desc+' '+pkg);
+  const fp=pkgToFp(pkg,cat);
+  const value=shortValue(desc)||mfr||code;
+  return {part:code,value,desc,cat,fp,pkg,mfr,price};
+}
+
 // A search box + result table backed by mergedParts(); `onPick(part)` per row.
 function partSearchUI(opts){
   const wrap=el('div'); const search=el('input',{placeholder:'Zoek op waarde, partnummer of omschrijving…'});
@@ -1416,6 +1454,30 @@ function partSearchUI(opts){
   const count=el('span',{class:'hint',style:'flex:1'});
   const impBtn=el('button',{class:'tool',text:'⤓ Importeer volledige catalogus'});
   tools.append(impBtn,count); wrap.append(search,tools);
+  // Direct add by exact LCSC number: fetch details online and use immediately.
+  const qrow=el('div',{class:'row',style:'margin-top:8px;align-items:flex-end'});
+  const qin=el('input',{placeholder:'LCSC-nummer, bv. C49678'});
+  const qbtn=el('button',{class:'on',style:'flex:0 0 auto;white-space:nowrap',
+    text:'🔎 '+(opts.btnText||'Gebruik')});
+  qrow.append(labeled('Direct via LCSC #',qin),qbtn); wrap.append(qrow);
+  const qmsg=el('div',{class:'hint',style:'margin-top:4px'}); wrap.append(qmsg);
+  async function quickAdd(){
+    const c=(qin.value||'').trim().toUpperCase();
+    if(!/^C\d+$/.test(c)){ qmsg.textContent='Voer een geldig LCSC-nummer in (bv. C49678).'; return; }
+    qbtn.disabled=true; qmsg.textContent='Ophalen bij LCSC…';
+    let part=null, via='';
+    try{ part=await lookupLcscOnline(c); via='online'; }
+    catch(e){ part=await catalogGet(c) || LCSC.find(p=>(p.part||'').toUpperCase()===c) || null;
+      via='lokaal';
+      if(!part){ qmsg.textContent='Kon '+c+' niet ophalen ('+e.message+'). '+
+        'Gebruik het formulier onderaan om het package zelf te kiezen.';
+        qbtn.disabled=false; return; } }
+    if(!LCSC.some(p=>(p.part||'').toUpperCase()===c)){ LCSC.push(part); saveLcsc(LCSC); }
+    qbtn.disabled=false; qin.value='';
+    qmsg.textContent='Toegevoegd ('+via+'): '+(part.value||c)+' · '+part.fp;
+    opts.onPick(part);
+  }
+  qbtn.onclick=quickAdd; qin.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); quickAdd(); } };
   const listWrap=el('div',{style:'margin-top:8px;max-height:'+(opts.maxH||'42vh')+';overflow:auto'});
   wrap.append(listWrap);
   const refreshCount=()=>catalogCount().then(n=>count.textContent= n
@@ -1469,6 +1531,23 @@ function addPartForm(onAdd){
   const fp=el('select'); FOOTPRINT_LIBRARY.forEach(t=>fp.append(el('option',{value:t,text:t})));
   wrap.append(el('div',{class:'row'},[labeled('Type',cat),labeled('Footprint',fp)]));
   wrap.append(el('div',{class:'row'},[labeled('Waarde',value),labeled('LCSC #',part),labeled('Prijs €',price)]));
+  const fetchRow=el('div',{class:'row',style:'align-items:center;margin-top:2px'});
+  const fetchBtn=el('button',{class:'tool',style:'flex:0 0 auto',text:'🔎 Ophalen uit LCSC-nummer'});
+  fetchRow.append(fetchBtn,el('div',{class:'small',style:'flex:1',
+    text:'Vult type, waarde, package/footprint en prijs automatisch in.'}));
+  wrap.append(fetchRow);
+  const fmsg=el('div',{class:'hint'}); wrap.append(fmsg);
+  fetchBtn.onclick=async()=>{ const c=(part.value||'').trim().toUpperCase();
+    if(!/^C\d+$/.test(c)){ fmsg.textContent='Voer eerst een LCSC-nummer in (bv. C49678).'; return; }
+    fetchBtn.disabled=true; fmsg.textContent='Ophalen…';
+    try{ const p=await lookupLcscOnline(c);
+      cat.value=p.cat; value.value=p.value; desc.value=p.desc; price.value=p.price||0; ensureFp(fp,p.fp);
+      fmsg.textContent='Gevonden: '+(p.value||c)+' · package '+(p.pkg||'?')+' → footprint '+p.fp+'. Controleer en pas zo nodig aan.';
+    }catch(e){ const hit=await catalogGet(c);
+      if(hit){ cat.value=hit.cat; value.value=hit.value; desc.value=hit.desc; price.value=hit.price||0; ensureFp(fp,hit.fp);
+        fmsg.textContent='Uit lokale catalogus: '+(hit.value||c)+' · '+hit.fp+'.'; }
+      else fmsg.textContent='Niet automatisch gevonden ('+e.message+'). Kies hieronder zelf het type en de footprint.'; }
+    fetchBtn.disabled=false; };
   wrap.append(labeled('Omschrijving',desc));
   wrap.append(el('button',{class:'tool',style:'margin-top:8px',onclick:()=>{
     if(!part.value && !value.value){ toast('Vul minstens een partnummer of waarde in'); return; }
