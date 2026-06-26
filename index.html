@@ -1206,6 +1206,183 @@ function loadLcsc(){ try{ const j=localStorage.getItem('pcbstudio.lcsc');
 function saveLcsc(list){ try{localStorage.setItem('pcbstudio.lcsc',JSON.stringify(list));}catch(e){} }
 let LCSC=loadLcsc();
 
+/* ----- Full catalog in IndexedDB -----
+   localStorage (~5MB) can't hold the whole LCSC catalog (600k+ parts), so an
+   imported catalog lives in IndexedDB, which scales to hundreds of MB and works
+   fully offline. The built-in LCSC[] list above stays a small curated starter;
+   the import below adds the *real* full data. Keyed by LCSC part number so an
+   exact lookup is O(1); a lowercase `blob` field powers substring search. */
+let catalogDB=null, catalogReady=null;
+function openCatalog(){
+  if(catalogReady) return catalogReady;
+  catalogReady=new Promise((res,rej)=>{
+    if(!('indexedDB' in window)){ rej(new Error('IndexedDB niet beschikbaar')); return; }
+    const rq=indexedDB.open('pcbstudio-catalog',1);
+    rq.onupgradeneeded=e=>{ const db=e.target.result;
+      if(!db.objectStoreNames.contains('parts')) db.createObjectStore('parts',{keyPath:'part'}); };
+    rq.onsuccess=e=>{ catalogDB=e.target.result; res(catalogDB); };
+    rq.onerror=()=>rej(rq.error);
+  });
+  return catalogReady;
+}
+async function catalogCount(){ try{ const db=await openCatalog();
+  return await new Promise((res,rej)=>{ const tx=db.transaction('parts','readonly');
+    const rq=tx.objectStore('parts').count(); rq.onsuccess=()=>res(rq.result); rq.onerror=()=>rej(rq.error); });
+}catch(e){ return 0; } }
+async function catalogClear(){ const db=await openCatalog();
+  return new Promise((res,rej)=>{ const tx=db.transaction('parts','readwrite');
+    tx.objectStore('parts').clear(); tx.oncomplete=()=>res(); tx.onerror=()=>rej(tx.error); }); }
+async function catalogGet(part){ try{ const db=await openCatalog();
+  return await new Promise((res,rej)=>{ const tx=db.transaction('parts','readonly');
+    const rq=tx.objectStore('parts').get((part||'').trim()); rq.onsuccess=()=>res(rq.result||null); rq.onerror=()=>rej(rq.error); });
+}catch(e){ return null; } }
+// Substring search over the imported catalog. Cursor scan, capped so a rare
+// query can't run unbounded; debounced + min-length-gated by the callers.
+async function catalogSearch(q,limit){ q=(q||'').toLowerCase().trim(); if(q.length<2) return [];
+  let db; try{ db=await openCatalog(); }catch(e){ return []; }
+  limit=limit||200; const SCAN_CAP=300000;
+  return new Promise((res)=>{ const out=[]; let scanned=0;
+    const tx=db.transaction('parts','readonly'); const cur=tx.objectStore('parts').openCursor();
+    cur.onsuccess=e=>{ const c=e.target.result;
+      if(!c||out.length>=limit||scanned>=SCAN_CAP){ res(out); return; }
+      scanned++; const v=c.value; if(v.blob && v.blob.indexOf(q)>=0) out.push(v); c.continue(); };
+    cur.onerror=()=>res(out); }); }
+
+// --- CSV parsing + column/category/footprint mapping (best-effort) ---
+function parseCsvLine(line){ const out=[]; let cur='', q=false;
+  for(let i=0;i<line.length;i++){ const ch=line[i];
+    if(q){ if(ch==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=ch; }
+    else if(ch==='"') q=true; else if(ch===','){ out.push(cur); cur=''; } else cur+=ch; }
+  out.push(cur); return out; }
+function detectCols(header){
+  const h=header.map(s=>s.toLowerCase().trim());
+  const idx={lcsc:-1,mfrpart:-1,package:-1,cat1:-1,cat2:-1,mfg:-1,lib:-1,desc:-1,price:-1,stock:-1};
+  h.forEach((name,i)=>{
+    if(idx.lcsc<0 && /lcsc/.test(name)) idx.lcsc=i;
+    else if(idx.mfrpart<0 && /(mfr|manufacturer)\s*[._ ]?part|^part$|mpn/.test(name)) idx.mfrpart=i;
+    else if(idx.cat1<0 && /first\s*categ/.test(name)) idx.cat1=i;
+    else if(idx.cat2<0 && /(second\s*categ|^categor)/.test(name)) idx.cat2=i;
+    else if(idx.package<0 && /package|footprint|solder\s*joint/.test(name)) idx.package=i;
+    else if(idx.mfg<0 && /manufacturer/.test(name)) idx.mfg=i;
+    else if(idx.lib<0 && /library\s*type|^type$/.test(name)) idx.lib=i;
+    else if(idx.desc<0 && /descr/.test(name)) idx.desc=i;
+    else if(idx.price<0 && /price/.test(name)) idx.price=i;
+    else if(idx.stock<0 && /stock|qty/.test(name)) idx.stock=i;
+  });
+  return idx;
+}
+function catFromText(s){ s=(s||'').toLowerCase();
+  if(/resistor|potentiomet/.test(s)) return 'R';
+  if(/capacitor|mlcc|tantal/.test(s)) return 'C';
+  if(/\bled\b|diode|rectifier|zener|schottky|\btvs\b/.test(s)) return 'D';
+  if(/connector|header|socket|terminal|\busb\b|receptacle|\bjack\b/.test(s)) return 'J';
+  if(/inductor|ferrite|bead|choke|crystal|oscillat|resonator|\bfuse\b|varistor|transformer|antenna/.test(s)) return 'X';
+  return 'U';
+}
+function pkgToFp(pkg,cat){
+  const s=(pkg||'').toUpperCase().replace(/\s+/g,''); const c=(cat==='C')?'C':'R'; let m;
+  if(/0805|2012/.test(s)) return c+'0805';
+  if(/0603|1608/.test(s)) return c+'0603';
+  if(/0402|0201/.test(s)) return c+'0603';
+  if(/1206|1210|1812|2010|2512/.test(s)) return c+'0805';
+  if(m=s.match(/SOIC-?(\d+)/)) return 'SOIC-'+m[1];
+  if(m=s.match(/(?:TSSOP|SSOP|MSOP|SOP)-?(\d+)/)) return 'SOIC-'+m[1];
+  if(m=s.match(/DIP-?(\d+)/)) return 'DIP-'+m[1];
+  if(/SOT-?23|SOT-?89|SOT-?223|SOT-?323/.test(s)) return 'SOT-23-3';
+  if(/(LED).*(3MM|5MM)|3MM.*LED|PLCC/.test(s)) return 'LED-3MM';
+  // header pin count: don't let \d+ swallow a decimal pitch (e.g. "1X4 2.54MM")
+  if(m=s.match(/1[X*](\d+)(?!\.\d)/)) return 'HDR-1x'+m[1];
+  if(m=s.match(/1-(\d+)P/)) return 'HDR-1x'+m[1];
+  if(cat==='R'||cat==='C') return c+'0805';
+  if(cat==='J') return 'HDR-1x2';
+  if(cat==='D') return 'SOT-23-3';
+  return 'SOIC-8';
+}
+function parsePrice(s){ if(!s) return 0; const m=s.match(/:\s*([\d.]+)/); if(m) return parseFloat(m[1]);
+  const m2=s.match(/[\d.]+/); return m2?parseFloat(m2[0]):0; }
+function shortValue(desc){ if(!desc) return '';
+  const m=desc.match(/[\d.]+\s?(?:[kKmMnpµu]|G)?\s?(?:Ω|ohm|F|H|V|A|W)\b/i);
+  return m?m[0].replace(/\s/g,''):''; }
+function mapCatalogRow(cols,idx){
+  const get=k=> (idx[k]>=0 && idx[k]<cols.length) ? (cols[idx[k]]||'').trim() : '';
+  const part=get('lcsc'); if(!part || !/^C?\d/i.test(part)) return null;
+  const pkg=get('package'); const catText=(get('cat2')||get('cat1'));
+  const mfr=get('mfrpart'); const mfg=get('mfg'); const desc=get('desc')||catText;
+  const cat=catFromText(catText+' '+desc);
+  const fp=pkgToFp(pkg,cat);
+  const value=mfr||shortValue(desc)||part;
+  const price=parsePrice(get('price'));
+  const lib=get('lib');
+  const blob=(part+' '+value+' '+desc+' '+catText+' '+pkg+' '+mfr+' '+mfg).toLowerCase();
+  return {part:part.toUpperCase(),value,desc,cat,fp,pkg,mfr,mfg,price,lib,blob};
+}
+// Core importer: `feed` is async(onLine=>...) so it works for both a streamed
+// File and a plain string (tests). Inserts in batches inside IndexedDB txns.
+async function importCatalog(feed,onProgress){
+  const db=await openCatalog(); let idx=null, batch=[], added=0;
+  async function flush(){ if(!batch.length) return; const b=batch; batch=[];
+    await new Promise((res,rej)=>{ const tx=db.transaction('parts','readwrite');
+      const st=tx.objectStore('parts'); for(const r of b) st.put(r);
+      tx.oncomplete=()=>res(); tx.onerror=()=>rej(tx.error); }); added+=b.length;
+    if(onProgress) onProgress(added); }
+  await feed(async(line)=>{
+    if(line==null) return; line=line.replace(/^﻿/,'');
+    if(!line.trim() && idx!==null) return;
+    if(idx===null){ if(!line.trim()) return; idx=detectCols(parseCsvLine(line));
+      if(idx.lcsc<0) throw new Error('Geen LCSC-kolom in CSV-header gevonden'); return; }
+    const row=mapCatalogRow(parseCsvLine(line),idx); if(row) batch.push(row);
+    if(batch.length>=2000) await flush();
+  });
+  await flush(); return added;
+}
+function fileFeed(file,onBytes){ return async(onLine)=>{
+  const CH=4*1024*1024; let pos=0, carry=''; const dec=new TextDecoder('utf-8');
+  while(pos<file.size){ const buf=await file.slice(pos,pos+CH).arrayBuffer(); pos+=CH;
+    const text=carry+dec.decode(buf,{stream:true}); const lines=text.split(/\r?\n/); carry=lines.pop();
+    for(const ln of lines) await onLine(ln);
+    if(onBytes) onBytes(Math.min(pos,file.size),file.size);
+    await new Promise(r=>setTimeout(r)); }
+  carry+=dec.decode(); if(carry) await onLine(carry); }; }
+function stringFeed(text){ return async(onLine)=>{ for(const ln of text.split(/\r?\n/)) await onLine(ln); }; }
+
+function openImportCatalog(refresh){
+  const body=el('div');
+  body.append(el('div',{class:'warnbox',html:
+    '<b>Volledige catalogus importeren.</b> Download een LCSC/JLCPCB onderdelen-CSV — bv. de '+
+    'JLCPCB <i>SMT Assembly Parts</i>-lijst (jlcpcb.com → Parts) of een export van het '+
+    '<i>jlcparts</i>-project — en kies hem hieronder. De data wordt lokaal in je browser '+
+    '(IndexedDB) bewaard: honderdduizenden onderdelen, daarna volledig <b>offline</b>. '+
+    'Niets wordt geüpload. Kolommen worden automatisch herkend (LCSC #, MFR.Part, Package, '+
+    'Category, Manufacturer, Description, Price). Footprint/symbool-mapping is best-effort — '+
+    'controleer voor productie altijd op lcsc.com.'}));
+  const count=el('div',{class:'hint'}); body.append(count);
+  const refreshCount=()=>catalogCount().then(n=>count.textContent=
+    'Nu in catalogus: '+n.toLocaleString('nl-NL')+' onderdelen'); refreshCount();
+  const file=el('input',{type:'file',accept:'.csv,text/csv,text/plain'});
+  body.append(labeled('CSV-bestand',file));
+  const bar=el('div',{style:'height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:8px'});
+  const fill=el('div',{style:'height:100%;width:0;background:var(--accent);transition:width .1s'}); bar.append(fill);
+  const prog=el('div',{class:'hint',style:'margin-top:4px'}); body.append(bar,prog);
+  const go=el('button',{class:'on',style:'margin-top:10px',text:'Importeer'});
+  const clr=el('button',{class:'tool',style:'margin-top:10px;margin-left:8px',text:'Wis catalogus'});
+  go.onclick=async()=>{ const f=file.files&&file.files[0];
+    if(!f){ toast('Kies eerst een CSV-bestand'); return; }
+    go.disabled=clr.disabled=true; fill.style.width='0';
+    try{ const added=await importCatalog(
+        fileFeed(f,(b,t)=>{ const pct=Math.round(b/t*100); fill.style.width=pct+'%';
+          prog.textContent='Inlezen… '+pct+'%'; }),
+        n=>{ prog.textContent='Geïmporteerd: '+n.toLocaleString('nl-NL')+'…'; });
+      await refreshCount();
+      prog.textContent='Klaar — '+added.toLocaleString('nl-NL')+' onderdelen verwerkt.';
+      toast('Catalogus geïmporteerd'); if(refresh) refresh();
+    }catch(e){ prog.textContent='Fout: '+e.message; toast('Import mislukt: '+e.message); }
+    go.disabled=clr.disabled=false; };
+  clr.onclick=async()=>{ if(!confirm('De hele geïmporteerde catalogus wissen?')) return;
+    await catalogClear(); await refreshCount(); toast('Catalogus gewist'); if(refresh) refresh(); };
+  body.append(el('div',{},[go,clr]));
+  openModal('Importeer onderdelen-catalogus',body);
+}
+
 // Map an LCSC part -> the schematic symbol it should be placed as.
 // Category (cat) drives the symbol; pin count for IC/connector comes from the footprint.
 function partToSymbol(p){
@@ -1221,25 +1398,58 @@ function partToSymbol(p){
   return {type:'generic2'};
 }
 
+// Small helpers shared by both pickers.
+function debounce(fn,ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
+// Merge the curated in-memory list with the imported IndexedDB catalog (deduped).
+async function mergedParts(q,limit){
+  q=(q||'').toLowerCase().trim();
+  const inMem=LCSC.filter(p=>!q||[p.value,p.part,p.desc,p.cat].join(' ').toLowerCase().includes(q));
+  const seen=new Set(inMem.map(p=>(p.part||'').toUpperCase()));
+  let cat=[]; if(q.length>=2) cat=(await catalogSearch(q,limit||200))
+    .filter(p=>!seen.has((p.part||'').toUpperCase()));
+  return {inMem,cat};
+}
+// A search box + result table backed by mergedParts(); `onPick(part)` per row.
+function partSearchUI(opts){
+  const wrap=el('div'); const search=el('input',{placeholder:'Zoek op waarde, partnummer of omschrijving…'});
+  const tools=el('div',{class:'row',style:'margin-top:8px;align-items:center'});
+  const count=el('span',{class:'hint',style:'flex:1'});
+  const impBtn=el('button',{class:'tool',text:'⤓ Importeer volledige catalogus'});
+  tools.append(impBtn,count); wrap.append(search,tools);
+  const listWrap=el('div',{style:'margin-top:8px;max-height:'+(opts.maxH||'42vh')+';overflow:auto'});
+  wrap.append(listWrap);
+  const refreshCount=()=>catalogCount().then(n=>count.textContent= n
+    ? (n.toLocaleString('nl-NL')+' in catalogus') : 'catalogus leeg — importeer voor alle parts');
+  let token=0;
+  async function render(){ const my=++token; const q=search.value;
+    const t=el('table'); t.append(el('tr',{},opts.cols.map(th)));
+    const mkRow=p=>{ const m=partToSymbol(p);
+      const cells=opts.row(p,m); cells.push(td(el('button',{class:opts.btnClass||'',
+        onclick:()=>opts.onPick(p),text:opts.btnText||'Kies'})));
+      return el('tr',{},cells); };
+    const {inMem,cat}=await mergedParts(q,200); if(my!==token) return;
+    inMem.forEach(p=>t.append(mkRow(p))); cat.forEach(p=>t.append(mkRow(p)));
+    listWrap.innerHTML=''; listWrap.append(t);
+    if(cat.length) listWrap.append(el('div',{class:'hint',style:'margin-top:6px',
+      text:'+ '+cat.length+' uit geïmporteerde catalogus'+(cat.length>=200?' (eerste 200 — verfijn je zoekopdracht)':'')}));
+    if(!inMem.length && !cat.length) listWrap.append(el('div',{class:'hint',style:'margin-top:6px',
+      text: q.trim()?'Geen onderdeel gevonden.':'Typ om te zoeken.'}));
+  }
+  const debounced=debounce(render,140); search.oninput=debounced;
+  impBtn.onclick=()=>openImportCatalog(()=>{ refreshCount(); render(); });
+  refreshCount(); render();
+  return {wrap,search,render};
+}
+
 function openLcscPicker(comp){
   const body=el('div'); body.append(el('div',{class:'warnbox',html:
-    'LCSC heeft geen publieke API. Dit is een <b>lokale, handmatig samengestelde lijst</b> — partnummers en prijzen zijn schattingen, laatst bijgewerkt jun 2026. <b>Controleer altijd op lcsc.com.</b>'}));
-  const search=el('input',{placeholder:'Zoek op waarde, partnummer of omschrijving…'});
-  body.append(search);
-  const listWrap=el('div',{style:'margin-top:8px;max-height:46vh;overflow:auto'});
-  function render(){ listWrap.innerHTML=''; const q=search.value.toLowerCase();
-    const t=el('table'); t.append(el('tr',{},[th('Waarde'),th('Omschrijving'),th('LCSC'),th('€/st'),th('')]));
-    LCSC.filter(p=>!q||[p.value,p.part,p.desc].join(' ').toLowerCase().includes(q)).forEach(p=>{
-      const r=el('tr',{},[td(p.value),td(p.desc),td(p.part),td('€'+fmt(p.price,4)),
-        td(el('button',{onclick:()=>{ snapshot(); comp.lcsc={partNumber:p.part,price:p.price,
-          footprint:p.fp,desc:p.desc,value:p.value};
-          if(!comp.value||comp.value===SYMBOLS[comp.type].defValue)comp.value=p.value;
-          closeModal(); buildProps(); autosave(); },text:'Kies'}))]);
-      t.append(r); });
-    listWrap.append(t); }
-  search.oninput=render; render();
-  body.append(listWrap);
-  body.append(addPartForm(render));
+    'Ingebouwde lijst = klein & handmatig (schattingen). Voor <b>alle</b> LCSC-parts: <b>Importeer volledige catalogus</b> (offline, IndexedDB). <b>Controleer altijd op lcsc.com.</b>'}));
+  const ui=partSearchUI({ cols:['Waarde','Omschrijving','LCSC','€/st',''], btnText:'Kies',
+    row:p=>[td(p.value),td(p.desc),td(p.part),td('€'+fmt(p.price,4))],
+    onPick:p=>{ snapshot(); comp.lcsc={partNumber:p.part,price:p.price,footprint:p.fp,desc:p.desc,value:p.value};
+      if(!comp.value||comp.value===SYMBOLS[comp.type].defValue)comp.value=p.value;
+      closeModal(); buildProps(); autosave(); }, maxH:'46vh' });
+  body.append(ui.wrap); body.append(addPartForm(ui.render));
   openModal('Koppel LCSC onderdeel — '+(comp.ref||''),body);
 }
 function th(t){return el('th',{text:t});} function td(c){ return el('td',{},
@@ -1271,32 +1481,20 @@ function addPartForm(onAdd){
   return wrap;
 }
 
-// Pick a part from the DB (or type a new one) and enter "place this part" mode.
+// Pick a part from the DB/catalog (or type a new one) and enter "place this part" mode.
 function openPlacePartPicker(){
   const body=el('div');
   body.append(el('div',{class:'warnbox',html:
-    'Kies een onderdeel om in het schema te plaatsen — het juiste <b>symbool</b>, de <b>waarde</b> én de <b>LCSC-koppeling</b> worden automatisch ingevuld. Staat het er niet bij? Tik het partnummer onderaan in. Prijzen/partnummers zijn schattingen — controleer op lcsc.com.'}));
-  const search=el('input',{placeholder:'Zoek op waarde, partnummer of omschrijving…'}); body.append(search);
-  const listWrap=el('div',{style:'margin-top:8px;max-height:42vh;overflow:auto'}); body.append(listWrap);
-  function render(){ listWrap.innerHTML=''; const q=search.value.toLowerCase();
-    const t=el('table');
-    t.append(el('tr',{},['Cat','Waarde','Omschrijving','LCSC','€','Symbool',''].map(th)));
-    LCSC.filter(p=>!q||[p.value,p.part,p.desc,p.cat].join(' ').toLowerCase().includes(q)).forEach(p=>{
-      const m=partToSymbol(p);
-      t.append(el('tr',{},[td(p.cat),td(p.value),td(p.desc),td(p.part),td('€'+fmt(p.price,4)),
-        td(SYMBOLS[m.type].label+(m.pinCount?(' '+m.pinCount+'p'):'')),
-        td(el('button',{class:'on',onclick:()=>{
-          state.placePart=p; state.placeType='part'; setTool('place');
-          closeModal(); toast('Tik op het canvas om '+(p.value||p.part)+' te plaatsen');
-        },text:'Plaats'}))]));
-    });
-    if(!t.querySelector('tr:nth-child(2)')) listWrap.append(el('div',{class:'hint',
-      text:'Geen onderdeel gevonden. Voeg het hieronder toe.'}));
-    listWrap.append(t); }
-  search.oninput=render; render();
-  body.append(addPartForm(render));
-  openModal('Plaats onderdeel uit DB',body);
-  setTimeout(()=>search.focus(),50);
+    'Kies een onderdeel om in het schema te plaatsen — <b>symbool</b>, <b>waarde</b> én <b>LCSC-koppeling</b> worden automatisch ingevuld. Niet gevonden? Importeer de <b>volledige catalogus</b> (knop) of tik het partnummer onderaan in. Controleer op lcsc.com.'}));
+  const ui=partSearchUI({ cols:['Cat','Waarde','Omschrijving','LCSC','€','Symbool',''],
+    btnText:'Plaats', btnClass:'on',
+    row:(p,m)=>[td(p.cat),td(p.value),td(p.desc),td(p.part),td('€'+fmt(p.price,4)),
+      td(SYMBOLS[m.type].label+(m.pinCount?(' '+m.pinCount+'p'):''))],
+    onPick:p=>{ state.placePart=p; state.placeType='part'; setTool('place');
+      closeModal(); toast('Tik op het canvas om '+(p.value||p.part)+' te plaatsen'); } });
+  body.append(ui.wrap); body.append(addPartForm(ui.render));
+  openModal('Plaats onderdeel uit DB / catalogus',body);
+  setTimeout(()=>ui.search.focus(),50);
 }
 
 function buildBom(){
@@ -1671,6 +1869,9 @@ window.PCB={ state, nets:()=>nets(), computeNets, generateFootprints, runDRC,
     state.netsDirty=true; return l; },
   partToSymbol, getLcsc:()=>LCSC,
   addPart:(p)=>{ LCSC.push(p); saveLcsc(LCSC); return p; },
+  catalogCount, catalogSearch, catalogGet, catalogClear,
+  catalogImportText:(text)=>importCatalog(stringFeed(text)),
+  pkgToFp, catFromText, parsePrice,
   fabFiles:()=>{ const o={}; for(const f of buildFabFiles())o[f.name]=f.text; return o; },
   cplString, bomJlcpcbString, buildDrill,
   fabZipB64:()=>{ const b=zipStore(buildFabFiles()); let s=''; const C=0x8000;
