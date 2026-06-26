@@ -23,7 +23,10 @@ back-up te maken of tussen apparaten te wisselen.
 
 ### Bediening
 - **Tabs** bovenaan: Schema / PCB / BOM.
-- **Plaatsen:** kies links een component/footprint, tik op het canvas.
+- **Plaatsen uit onderdelen-DB:** in het Schema-tab → *Uit onderdelen-DB → Kies partnummer & plaats*.
+  Tik een LCSC-partnummer in (of kies een bestaand), tik dan op het canvas. Het juiste symbool,
+  de waarde én de LCSC-koppeling worden automatisch ingevuld → komt zo ook meteen in de BOM.
+- **Plaatsen (kaal symbool):** kies links een component/footprint, tik op het canvas.
 - **Pan:** sleep op lege ruimte (1 vinger) of sleep met de muis. **Zoom:** pinch (touch) of muiswiel.
 - **Draad/Trace:** kies de tool, tik pin→pin. Dubbeltik, **Enter**, of de **✓ Klaar**-knop sluit af.
 - **Sneltoetsen:** `R` draaien · `Del`/`Backspace` verwijderen · `F` passend zoomen ·
@@ -73,7 +76,10 @@ zodanig gelabeld — **controleer altijd op lcsc.com**. (Optie b, live fetch, is
 ingebouwd: CORS/JS-rendering blokkeert dit vrijwel zeker en het zou een schijnzekerheid geven.)
 
 Verder:
-- Onderdeel koppelen aan een schematic-symbool (knop *Koppel onderdeel*).
+- **Partnummer-gedreven plaatsen:** tik een LCSC-partnummer in (of kies uit de DB) en plaats het
+  onderdeel direct in het schema. Categorie (R/C/D/U/J) bepaalt het symbool, de footprint bepaalt
+  het aantal pins (bv. SOIC-8 → 8-pins IC); waarde + LCSC-koppeling worden meteen ingevuld.
+- Onderdeel koppelen aan een bestaand schematic-symbool (knop *Koppel onderdeel*).
 - **BOM** automatisch gegenereerd uit de schematic: groepeert op waarde/footprint/partnummer,
   met aantal, designators, partnummer en geschatte totaalprijs.
 - **CSV-export:** JLCPCB SMT-formaat (`Comment, Designator, Footprint, LCSC Part #`) + een

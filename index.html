@@ -172,6 +172,7 @@ const state = {
   view:{ sch:{tx:0,ty:0,scale:2.2}, pcb:{tx:0,ty:0,scale:9} },
   tool:{ sch:'select', pcb:'select' },
   placeType:null,        // pending component/footprint type to place
+  placePart:null,        // pending LCSC part to place as a component (schematic)
   selection:[],          // array of {kind,id}
   layer:'top',           // active pcb layer
   // transient interaction
@@ -843,10 +844,18 @@ function selectOnly(kind,id){ state.selection=[{kind,id}]; markDirty(); buildPro
 function clearSel(){ state.selection=[]; markDirty(); }
 
 /* placement */
-function placeComponentAt(p){ snapshot(); const t=state.placeType||'resistor';
-  const def=SYMBOLS[t]; const c={id:uid('c'),type:t,x:p.x,y:p.y,rot:0,
-    ref:nextRef(def.prefix), value:def.defValue, lcsc:null};
-  if(def.pinCount) c.pinCount=def.pinCount;
+function placeComponentAt(p){ snapshot(); let c;
+  if(state.placeType==='part' && state.placePart){
+    const part=state.placePart; const m=partToSymbol(part); const def=SYMBOLS[m.type];
+    c={id:uid('c'),type:m.type,x:p.x,y:p.y,rot:0,ref:nextRef(def.prefix),
+       value:part.value||def.defValue,
+       lcsc:{partNumber:part.part,price:part.price||0,footprint:part.fp,desc:part.desc,value:part.value}};
+    if(m.pinCount) c.pinCount=m.pinCount; else if(def.pinCount) c.pinCount=def.pinCount;
+  } else {
+    const t=state.placeType||'resistor'; const def=SYMBOLS[t];
+    c={id:uid('c'),type:t,x:p.x,y:p.y,rot:0,ref:nextRef(def.prefix),value:def.defValue,lcsc:null};
+    if(def.pinCount) c.pinCount=def.pinCount;
+  }
   state.project.sch.components.push(c); state.netsDirty=true; selectOnly('component',c.id);
   autosave(); buildProps(); markDirty(); }
 function placeFootprintAt(p){ snapshot(); const t=state.placeType||'R0805';
@@ -956,10 +965,26 @@ function buildSidebar(){
       toolBtn('╱','Draad','wire',state.tool.sch==='wire',()=>setTool('wire')),
       toolBtn('🏷','Netlabel','label',state.tool.sch==='label',()=>setTool('label')),
     ]));
+    // Place from your LCSC parts database (type a part number, then drop it in the schematic)
+    sb.append(toolGroup('Uit onderdelen-DB',[
+      actBtn('🔎 Kies partnummer & plaats', openPlacePartPicker),
+    ]));
+    if(state.tool.sch==='place' && state.placeType==='part' && state.placePart){
+      const part=state.placePart; const m=partToSymbol(part);
+      const card=el('div',{class:'propcard'});
+      card.append(el('div',{class:'title',text:'Klaar om te plaatsen'}));
+      card.append(el('div',{class:'small',text:(part.value||part.part||'?')+(part.part?('  ·  '+part.part):'')}));
+      card.append(el('div',{class:'small',text:'Symbool: '+SYMBOLS[m.type].label+(m.pinCount?(' ('+m.pinCount+' pins)'):'')+'  ·  '+(part.fp||'')}));
+      card.append(el('div',{class:'small',style:'margin-top:4px',text:'Tik op het canvas om te plaatsen.'}));
+      card.append(el('button',{class:'tool',style:'margin-top:6px',
+        onclick:()=>{state.placePart=null;setTool('select');}},el('span',{text:'✕ Stop met plaatsen'})));
+      sb.append(card);
+    }
     const comps=['resistor','capacitor','led','diode','ic','connector','generic2','genericN'];
-    sb.append(toolGroup('Plaats component', comps.map(t=>
+    sb.append(toolGroup('Plaats kaal symbool', comps.map(t=>
       toolBtn('＋',SYMBOLS[t].label,'place-'+t,
-        state.tool.sch==='place'&&state.placeType===t,()=>{setTool('place');state.placeType=t;buildSidebar();}))));
+        state.tool.sch==='place'&&state.placeType===t,
+        ()=>{state.placePart=null;state.placeType=t;setTool('place');}))));
     if(state.tool.sch==='place'&&(state.placeType==='ic'||state.placeType==='genericN'||state.placeType==='connector')){
       const g=el('div',{class:'sidebar-group'});
       g.append(el('label',{text:'Aantal pins (nieuw)'}));
@@ -1031,7 +1056,8 @@ function layerBtn(layer,label){ const b=el('button',{class:'tool layerbtn'+(stat
 function updateLayerBtns(){ document.querySelectorAll('.layerbtn').forEach(b=>
   b.classList.toggle('on',b.getAttribute('data-layer')===state.layer)); }
 function setTool(t){ state.tool[state.tab]=t; if(t!=='wire'&&t!=='trace')cancelWiring();
-  if(t!=='outline')outlineStart=null; buildSidebar(); markDirty(); }
+  if(t!=='outline')outlineStart=null; if(t!=='place')state.placePart=null;
+  buildSidebar(); markDirty(); }
 
 function buildProps(){
   const pp=$('#props'); pp.innerHTML='';
@@ -1039,7 +1065,7 @@ function buildProps(){
   if(!state.selection.length){
     pp.append(el('div',{class:'hint',html:
       state.tab==='sch'
-      ? 'Selecteer een object om te bewerken.<br><br><b>Tips</b><br>• Kies links een component en tik op het canvas om te plaatsen.<br>• Draad-tool: tik pin→pin, dubbeltik = klaar.<br>• <span class="kbd">R</span> draaien, <span class="kbd">Del</span> verwijderen, <span class="kbd">F</span> fit.'
+      ? 'Selecteer een object om te bewerken.<br><br><b>Tips</b><br>• <b>Uit onderdelen-DB</b> (links): tik een partnummer in of kies er een, en plaats het meteen — symbool + waarde + LCSC-koppeling worden ingevuld.<br>• Of kies een kaal symbool en tik op het canvas.<br>• Draad-tool: tik pin→pin, dubbeltik = klaar.<br>• <span class="kbd">R</span> draaien, <span class="kbd">Del</span> verwijderen, <span class="kbd">F</span> fit.'
       : 'Selecteer een footprint of trace.<br><br>• "Genereer footprints" maakt footprints uit je schema.<br>• Trace-tool: tik pad→pad.<br>• Ratsnest = grijze stippellijnen tonen nog te verbinden netten.<br>• <span class="kbd">R</span> draaien.'}));
     // net summary
     if(state.tab==='sch'){ const n=nets();
@@ -1144,6 +1170,20 @@ function loadLcsc(){ try{ const j=localStorage.getItem('pcbstudio.lcsc');
 function saveLcsc(list){ try{localStorage.setItem('pcbstudio.lcsc',JSON.stringify(list));}catch(e){} }
 let LCSC=loadLcsc();
 
+// Map an LCSC part -> the schematic symbol it should be placed as.
+// Category (cat) drives the symbol; pin count for IC/connector comes from the footprint.
+function partToSymbol(p){
+  const cat=(p.cat||'X').toString().toUpperCase();
+  const padCount=()=>{ try{ return makeFootprint(p.fp).pads.length; }catch(e){ return 2; } };
+  if(cat==='R') return {type:'resistor'};
+  if(cat==='C') return {type:'capacitor'};
+  if(cat==='D'){ const s=((p.value||'')+' '+(p.desc||'')).toLowerCase();
+    return {type:/led/.test(s)?'led':'diode'}; }
+  if(cat==='J') return {type:'connector', pinCount:Math.max(2,padCount())};
+  if(cat==='U') return {type:'ic', pinCount:Math.max(2,padCount())};
+  return {type:'generic2'};
+}
+
 function openLcscPicker(comp){
   const body=el('div'); body.append(el('div',{class:'warnbox',html:
     'LCSC heeft geen publieke API. Dit is een <b>lokale, handmatig samengestelde lijst</b> — partnummers en prijzen zijn schattingen, laatst bijgewerkt jun 2026. <b>Controleer altijd op lcsc.com.</b>'}));
@@ -1161,22 +1201,66 @@ function openLcscPicker(comp){
       t.append(r); });
     listWrap.append(t); }
   search.oninput=render; render();
-  // add-your-own form
-  body.append(el('h4',{text:'Eigen onderdeel toevoegen',style:'margin-top:14px'}));
-  const f=el('div',{class:'row'});
-  const iv=el('input',{placeholder:'Waarde'}),idd=el('input',{placeholder:'Omschrijving'}),
-        ip=el('input',{placeholder:'LCSC #'}),ipr=el('input',{placeholder:'Prijs €',type:'number',step:'0.001'}),
-        ifp=el('input',{placeholder:'Footprint'});
-  [iv,idd,ip,ipr,ifp].forEach(x=>f.append(x)); body.append(f);
-  body.append(el('button',{class:'tool',style:'margin-top:6px',onclick:()=>{
-    if(!ip.value)return; LCSC.push({cat:'X',value:iv.value,desc:idd.value,part:ip.value,
-      price:parseFloat(ipr.value)||0,fp:ifp.value||'R0805'}); saveLcsc(LCSC); render();
-    iv.value=idd.value=ip.value=ipr.value=ifp.value=''; },},el('span',{text:'+ Toevoegen aan lokale DB'})));
   body.append(listWrap);
+  body.append(addPartForm(render));
   openModal('Koppel LCSC onderdeel — '+(comp.ref||''),body);
 }
 function th(t){return el('th',{text:t});} function td(c){ return el('td',{},
   typeof c==='string'?document.createTextNode(c):c); }
+function labeled(lbl,node){ const w=el('div'); w.append(el('label',{text:lbl}),node); return w; }
+
+// Reusable "type a new part number" form. onAdd() is called after a part is added.
+function addPartForm(onAdd){
+  const wrap=el('div',{style:'margin-top:12px;border-top:1px solid var(--line);padding-top:10px'});
+  wrap.append(el('h4',{text:'Nieuw partnummer toevoegen',style:'margin:0 0 6px'}));
+  const cat=el('select');
+  [['R','Weerstand'],['C','Condensator'],['D','Diode / LED'],['U','IC'],
+   ['J','Connector / header'],['X','Overig 2-pin']].forEach(([v,l])=>cat.append(el('option',{value:v,text:l})));
+  const value=el('input',{placeholder:'bv. 10k'});
+  const part=el('input',{placeholder:'bv. C17414'});
+  const price=el('input',{placeholder:'0.00',type:'number',step:'0.0001'});
+  const desc=el('input',{placeholder:'Omschrijving (optioneel)'});
+  const fp=el('select'); FOOTPRINT_LIBRARY.forEach(t=>fp.append(el('option',{value:t,text:t})));
+  wrap.append(el('div',{class:'row'},[labeled('Type',cat),labeled('Footprint',fp)]));
+  wrap.append(el('div',{class:'row'},[labeled('Waarde',value),labeled('LCSC #',part),labeled('Prijs €',price)]));
+  wrap.append(labeled('Omschrijving',desc));
+  wrap.append(el('button',{class:'tool',style:'margin-top:8px',onclick:()=>{
+    if(!part.value && !value.value){ toast('Vul minstens een partnummer of waarde in'); return; }
+    LCSC.push({cat:cat.value,value:value.value.trim(),desc:(desc.value.trim()||value.value.trim()),
+      part:part.value.trim(),price:parseFloat(price.value)||0,fp:fp.value});
+    saveLcsc(LCSC); toast('Toegevoegd aan onderdelen-DB');
+    value.value=part.value=price.value=desc.value=''; if(onAdd)onAdd();
+  }},el('span',{text:'+ Toevoegen aan onderdelen-DB'})));
+  return wrap;
+}
+
+// Pick a part from the DB (or type a new one) and enter "place this part" mode.
+function openPlacePartPicker(){
+  const body=el('div');
+  body.append(el('div',{class:'warnbox',html:
+    'Kies een onderdeel om in het schema te plaatsen — het juiste <b>symbool</b>, de <b>waarde</b> én de <b>LCSC-koppeling</b> worden automatisch ingevuld. Staat het er niet bij? Tik het partnummer onderaan in. Prijzen/partnummers zijn schattingen — controleer op lcsc.com.'}));
+  const search=el('input',{placeholder:'Zoek op waarde, partnummer of omschrijving…'}); body.append(search);
+  const listWrap=el('div',{style:'margin-top:8px;max-height:42vh;overflow:auto'}); body.append(listWrap);
+  function render(){ listWrap.innerHTML=''; const q=search.value.toLowerCase();
+    const t=el('table');
+    t.append(el('tr',{},['Cat','Waarde','Omschrijving','LCSC','€','Symbool',''].map(th)));
+    LCSC.filter(p=>!q||[p.value,p.part,p.desc,p.cat].join(' ').toLowerCase().includes(q)).forEach(p=>{
+      const m=partToSymbol(p);
+      t.append(el('tr',{},[td(p.cat),td(p.value),td(p.desc),td(p.part),td('€'+fmt(p.price,4)),
+        td(SYMBOLS[m.type].label+(m.pinCount?(' '+m.pinCount+'p'):'')),
+        td(el('button',{class:'on',onclick:()=>{
+          state.placePart=p; state.placeType='part'; setTool('place');
+          closeModal(); toast('Tik op het canvas om '+(p.value||p.part)+' te plaatsen');
+        },text:'Plaats'}))]));
+    });
+    if(!t.querySelector('tr:nth-child(2)')) listWrap.append(el('div',{class:'hint',
+      text:'Geen onderdeel gevonden. Voeg het hieronder toe.'}));
+    listWrap.append(t); }
+  search.oninput=render; render();
+  body.append(addPartForm(render));
+  openModal('Plaats onderdeel uit DB',body);
+  setTimeout(()=>search.focus(),50);
+}
 
 function buildBom(){
   // aggregate by (value+footprint+part)
@@ -1413,6 +1497,11 @@ window.PCB={ state, nets:()=>nets(), computeNets, generateFootprints, runDRC,
     state.netsDirty=true; markDirty(); return w; },
   addLabel:(x,y,name)=>{ const l={id:uid('l'),x,y,name}; state.project.sch.labels.push(l);
     state.netsDirty=true; return l; },
+  partToSymbol, getLcsc:()=>LCSC,
+  addPart:(p)=>{ LCSC.push(p); saveLcsc(LCSC); return p; },
+  placeFromPart:(part,x,y)=>{ state.placePart=part; state.placeType='part';
+    placeComponentAt({x,y}); const c=state.project.sch.components.slice(-1)[0];
+    state.placePart=null; state.placeType=null; return c; },
   fit:fitView };
 
 /* ---------------- init ---------------- */
