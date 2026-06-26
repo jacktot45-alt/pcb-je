@@ -1424,7 +1424,7 @@ function ensureFp(sel,val){ if(!val) return;
 async function lookupLcscOnline(code){
   code=(code||'').trim().toUpperCase();
   if(!/^C\d+$/.test(code)) throw new Error('ongeldig nummer');
-  const url='https://easyeda.com/api/products/'+encodeURIComponent(code)+'/components?version=6.4.19.5';
+  const url='https://corsproxy.io/?url='+encodeURIComponent('https://easyeda.com/api/products/'+code+'/components?version=6.4.19.5');
   const ctrl=new AbortController(); const tm=setTimeout(()=>ctrl.abort(),12000);
   let res;
   try{ res=await fetch(url,{headers:{Accept:'application/json'},signal:ctrl.signal}); }
