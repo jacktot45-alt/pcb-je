@@ -1011,7 +1011,9 @@ function buildSidebar(){
       card.append(el('div',{class:'title',text:'Klaar om te plaatsen'}));
       card.append(el('div',{class:'small',text:(part.value||part.part||'?')+(part.part?('  ·  '+part.part):'')}));
       card.append(el('div',{class:'small',text:'Symbool: '+SYMBOLS[m.type].label+(m.pinCount?(' ('+m.pinCount+' pins)'):'')+'  ·  '+(part.fp||'')}));
-      card.append(el('div',{class:'small',style:'margin-top:4px',text:'Tik op het canvas om te plaatsen.'}));
+      card.append(el('div',{class:'small',style:'margin-top:4px;color:var(--warn)',
+        text:'⚠ Footprint is uit de standaardbibliotheek — controleer/vervang voor niet-standaard onderdelen vóór productie.'}));
+      card.append(el('div',{class:'small',style:'margin-top:4px',text:'Tik op het canvas om te plaatsen. Pin-aantal kun je na plaatsen aanpassen in Eigenschappen.'}));
       card.append(el('button',{class:'tool',style:'margin-top:6px',
         onclick:()=>{state.placePart=null;setTool('select');}},el('span',{text:'✕ Stop met plaatsen'})));
       sb.append(card);
@@ -1388,7 +1390,8 @@ function openImportCatalog(refresh){
 // Category (cat) drives the symbol; pin count for IC/connector comes from the footprint.
 function partToSymbol(p){
   const cat=(p.cat||'X').toString().toUpperCase();
-  const padCount=()=>{ try{ return makeFootprint(p.fp).pads.length; }catch(e){ return 2; } };
+  // Prefer the real pin count from the LCSC lookup; else derive from the footprint.
+  const padCount=()=>{ if(p.pins>0) return p.pins; try{ return makeFootprint(p.fp).pads.length; }catch(e){ return 2; } };
   if(cat==='R') return {type:'resistor'};
   if(cat==='C'){ const s=((p.value||'')+' '+(p.desc||'')).toLowerCase();
     return {type:/elco|electrolyt|tantal|polarized|gepol/.test(s)?'cap_pol':'capacitor'}; }
@@ -1416,35 +1419,74 @@ function ensureFp(sel,val){ if(!val) return;
   if(![...sel.options].some(o=>o.value===val)) sel.append(el('option',{value:val,text:val+' (auto)'}));
   sel.value=val; }
 
+// Try several CORS strategies, because a browser usually can't call easyeda.com
+// directly. First URL that returns usable JSON wins; otherwise we throw.
+async function fetchJsonViaProxies(target){
+  const urls=[
+    target,
+    'https://corsproxy.io/?url='+encodeURIComponent(target),
+    'https://api.allorigins.win/raw?url='+encodeURIComponent(target),
+    'https://thingproxy.freeboard.io/fetch/'+target,
+  ];
+  let lastErr='geen verbinding';
+  for(const u of urls){
+    const ctrl=new AbortController(); const tm=setTimeout(()=>ctrl.abort(),9000);
+    try{ const res=await fetch(u,{headers:{Accept:'application/json'},signal:ctrl.signal});
+      clearTimeout(tm);
+      if(!res.ok){ lastErr='status '+res.status; continue; }
+      const j=await res.json(); if(j&&typeof j==='object') return j;
+      lastErr='onverwacht antwoord';
+    }catch(e){ clearTimeout(tm); lastErr='netwerk/CORS'; }
+  }
+  throw new Error(lastErr);
+}
+// Map an EasyEDA schematic prefix (e.g. "J?", "U?", "R?") to our part category.
+// This is far more reliable than guessing the category from description text.
+function catFromPrefix(pre){ pre=(pre||'').toUpperCase().replace(/[^A-Z]/g,'');
+  if(pre==='R'||pre==='RN'||pre==='RV'||pre==='RT') return 'R';
+  if(pre==='C') return 'C';
+  if(pre==='D'||pre==='LED'||pre==='ZD'||pre==='DZ'||pre==='DB') return 'D';
+  if(pre==='U'||pre==='IC'||pre==='Q'||pre==='AR'||pre==='QT'||pre==='OS') return 'U';
+  if(pre==='J'||pre==='CN'||pre==='CON'||pre==='CONN'||pre==='P'||pre==='JP'||
+     pre==='USB'||pre==='BT'||pre==='BAT'||pre==='B'||pre==='K') return 'J';
+  if(pre==='L'||pre==='FB'||pre==='LR') return 'X';
+  return null; }
+
 /* Look up one LCSC part number online and normalise it to our part shape.
-   Uses EasyEDA's public component endpoint (the same data LCSC/JLCPCB expose) so
-   a single part can be added without importing the whole catalog. Runs in the
-   user's browser; if the network or CORS blocks it, callers fall back to the
-   imported catalog or to manual package entry. */
+   Pulls EasyEDA's public component data: the schematic prefix drives the symbol,
+   and the real number of numbered pads in the footprint drives the pin count.
+   Runs in the user's browser via a CORS proxy; on failure callers fall back to
+   the local catalog or to manual entry. NOTE: the footprint *geometry* is still
+   mapped onto this tool's built-in library, so for non-standard parts (e.g. an
+   XT60) verify/replace the footprint before ordering. */
 async function lookupLcscOnline(code){
   code=(code||'').trim().toUpperCase();
   if(!/^C\d+$/.test(code)) throw new Error('ongeldig nummer');
-  const url='https://corsproxy.io/?url='+encodeURIComponent('https://easyeda.com/api/products/'+code+'/components?version=6.4.19.5');
-  const ctrl=new AbortController(); const tm=setTimeout(()=>ctrl.abort(),12000);
-  let res;
-  try{ res=await fetch(url,{headers:{Accept:'application/json'},signal:ctrl.signal}); }
-  catch(e){ throw new Error('geen verbinding (offline of geblokkeerd)'); }
-  finally{ clearTimeout(tm); }
-  if(!res.ok) throw new Error('LCSC status '+res.status);
-  let j; try{ j=await res.json(); }catch(e){ throw new Error('onverwacht antwoord'); }
+  const target='https://easyeda.com/api/products/'+code+'/components?version=6.4.19.5';
+  let j; try{ j=await fetchJsonViaProxies(target); }
+  catch(e){ throw new Error('geen verbinding ('+e.message+')'); }
   const r=j&&j.result; if(!r) throw new Error('niet gevonden bij LCSC');
   const cp=(r.dataStr&&r.dataStr.head&&r.dataStr.head.c_para)||{};
+  const pre=cp.pre||'';
   const pkg=(r.packageDetail&&r.packageDetail.title)||cp.package||cp.Package||'';
-  const mfr=cp['Manufacturer Part']||cp['Manufacturer Part Number']||r.title||'';
+  const mfr=cp['BOM_Manufacturer Part']||cp['Manufacturer Part']||cp['Manufacturer Part Number']||cp.name||r.title||'';
   const desc=r.description||r.title||mfr||'';
+  // Real pin count = number of numbered copper pads in the EasyEDA footprint.
+  let pins=0; const shapes=(r.packageDetail&&r.packageDetail.dataStr&&r.packageDetail.dataStr.shape)||[];
+  if(Array.isArray(shapes)) for(const s of shapes){ if(typeof s!=='string'||!/^PAD~/.test(s)) continue;
+    const num=(s.split('~')[8]||'').trim(); if(num&&/^\d+$/.test(num)) pins++; }
   let price=0;
   if(r.szlcsc&&r.szlcsc.price!=null) price=parseFloat(r.szlcsc.price)||0;
   else if(r.lcsc&&Array.isArray(r.lcsc.price)&&r.lcsc.price.length)
     price=parseFloat(r.lcsc.price[r.lcsc.price.length-1].price)||0;
-  const cat=catFromText(mfr+' '+desc+' '+pkg);
-  const fp=pkgToFp(pkg,cat);
+  const cat=catFromPrefix(pre)||catFromText(mfr+' '+desc+' '+pkg);
+  let fp=pkgToFp(pkg,cat);
+  // Keep symbol / footprint / BOM pin counts consistent with the real part,
+  // without clobbering a specific package guess (e.g. SOT-23-3) we already have.
+  if(cat==='J'&&pins>=2) fp='HDR-1x'+pins;
+  else if(cat==='U'&&fp==='SOIC-8'&&pins>2&&pins!==8) fp='SOIC-'+pins;
   const value=shortValue(desc)||mfr||code;
-  return {part:code,value,desc,cat,fp,pkg,mfr,price};
+  return {part:code,value,desc,cat,fp,pkg,mfr,price,pins};
 }
 
 // A search box + result table backed by mergedParts(); `onPick(part)` per row.
