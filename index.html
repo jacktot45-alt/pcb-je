@@ -1442,8 +1442,7 @@ function partSearchUI(opts){
 }
 
 function openLcscPicker(comp){
-  const body=el('div'); body.append(el('div',{class:'warnbox',html:
-    'Ingebouwde lijst = klein & handmatig (schattingen). Voor <b>alle</b> LCSC-parts: <b>Importeer volledige catalogus</b> (offline, IndexedDB). <b>Controleer altijd op lcsc.com.</b>'}));
+  const body=el('div');
   const ui=partSearchUI({ cols:['Waarde','Omschrijving','LCSC','€/st',''], btnText:'Kies',
     row:p=>[td(p.value),td(p.desc),td(p.part),td('€'+fmt(p.price,4))],
     onPick:p=>{ snapshot(); comp.lcsc={partNumber:p.part,price:p.price,footprint:p.fp,desc:p.desc,value:p.value};
@@ -1484,8 +1483,6 @@ function addPartForm(onAdd){
 // Pick a part from the DB/catalog (or type a new one) and enter "place this part" mode.
 function openPlacePartPicker(){
   const body=el('div');
-  body.append(el('div',{class:'warnbox',html:
-    'Kies een onderdeel om in het schema te plaatsen — <b>symbool</b>, <b>waarde</b> én <b>LCSC-koppeling</b> worden automatisch ingevuld. Niet gevonden? Importeer de <b>volledige catalogus</b> (knop) of tik het partnummer onderaan in. Controleer op lcsc.com.'}));
   const ui=partSearchUI({ cols:['Cat','Waarde','Omschrijving','LCSC','€','Symbool',''],
     btnText:'Plaats', btnClass:'on',
     row:(p,m)=>[td(p.cat),td(p.value),td(p.desc),td(p.part),td('€'+fmt(p.price,4)),
