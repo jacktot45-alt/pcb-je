@@ -96,7 +96,7 @@
 <body>
 <div id="app">
   <header>
-    <span class="brand">PCB&nbsp;Studio <small>v1 MVP</small></span>
+    <span class="brand">PCB&nbsp;Studio <small>v2 MVP</small></span>
     <div class="tabs" id="tabs">
       <button data-tab="sch" class="on">Schema</button>
       <button data-tab="pcb">PCB</button>
@@ -1380,7 +1380,7 @@ function exportSVG(layer){
   s+='</svg>'; return s;
 }
 function exportPcbJson(){
-  const o={ units:'mm', generatedBy:'PCB Studio v1 MVP',
+  const o={ units:'mm', generatedBy:'PCB Studio v2 MVP',
     note:'Dit is GEEN Gerber/fabricage-bestand. Coördinaten ter referentie.',
     outline:state.project.pcb.outline,
     footprints:state.project.pcb.footprints.map(f=>({ref:f.ref,type:f.type,x:f.x,y:f.y,rot:f.rot,
