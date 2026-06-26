@@ -38,8 +38,10 @@ back-up te maken of tussen apparaten te wisselen.
 ## Wat werkt per fase
 
 ### Fase 1 — Schematic editor
-- Componenten: weerstand, condensator, LED, diode, IC (instelbaar aantal pins), connector/header
-  (N pins), generiek 2-pin en generiek N-pin.
+- Componenten: weerstand, condensator, **gepolariseerde condensator / elco (+/−)**, LED, diode,
+  IC (instelbaar aantal pins), connector/header (N pins), generiek 2-pin en generiek N-pin.
+- **Polariteit:** bij polaire onderdelen (elco, LED, diode) tonen we duidelijke **+ (rood)** en
+  **− (blauw)** markeringen bij de pinnen — in het schema én op de PCB (silkscreen).
 - Pins verbinden met orthogonale draden (tik-tik), met automatische elleboog en junction-dots.
 - **Net labels** geven verbindingen een naam; gelijke namen worden hetzelfde net (ook zonder
   fysieke draad).
@@ -59,8 +61,13 @@ back-up te maken of tussen apparaten te wisselen.
   nog geen trace hebben (MST per net, houdt rekening met bestaande traces).
 - **Basic DRC:** waarschuwt bij pads/traces dichter dan de instelbare clearance (rode markers).
 - **Board outline:** rechthoek tekenen.
-- **Export:** top- en bottom-copper als **SVG** + volledige **JSON** met alle coördinaten.
-  In de UI staat duidelijk dat dit **GEEN fabricage-ready Gerber** is.
+- **Fabricage-export (JLCPCB-klaar):** echte **Gerber (RS-274X)** — top/bottom koper,
+  top/bottom soldermask, top silkscreen (met courtyards + polariteit), board outline (edge cuts) —
+  plus een **Excellon-boorfile**, een **CPL / pick&place** (JLCPCB-formaat) en de **assemblage-BOM**,
+  allemaal verpakt in één **ZIP** (zonder externe libraries; eigen ZIP-writer met CRC32).
+  Daarnaast top/bottom-copper als **SVG** + volledige **JSON** ter referentie.
+  > Best-effort uit een MVP-tool: **controleer altijd in een gratis Gerber-viewer** (JLCPCB online
+  > viewer / KiCad GerbView) vóór je bestelt — vooral pad-vormen, drill-maten en de CPL-rotaties.
 
 ### Fase 3 — LCSC + BOM
 **Gekozen aanpak: a + c (hybride).** LCSC heeft geen publieke API en hun site is JS-rendered,
@@ -98,8 +105,10 @@ schema, PCB, BOM en modals. Geen console-/runtime-fouten.
 ## Gaps t.o.v. een echte tool (KiCad/EasyEDA)
 Dit is een MVP. De belangrijkste beperkingen, zodat je weet wat je kunt verwachten:
 
-1. **Geen Gerber/drill-export.** Output is SVG + JSON ter referentie, niet fabricage-ready.
-   Echte Gerber-, NC-drill- en pick-&-place-bestanden ontbreken (grootste gap voor productie).
+1. **Gerber/drill/CPL zijn best-effort, niet gevalideerd door een fab.** De export is geldig
+   RS-274X/Excellon en opent in gerber-viewers, maar er zit geen volledige conformiteitstest of
+   CAM-controle op. Verifieer altijd in een viewer; CPL-rotaties kloppen mogelijk niet voor elk
+   onderdeel (een bekend lastig punt, zelfs in pro-tools). Geen X2-attributen, geen paste-laag.
 2. **Geen design-symbool/footprint-bibliotheken** zoals KiCad. Symbolen en footprints zijn een
    kleine, hardcoded set; geen import van standaardlibs of 3D-modellen.
 3. **DRC is basaal.** Alleen clearance pad-pad en trace-trace (per laag). Geen controle op
