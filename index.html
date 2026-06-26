@@ -259,7 +259,15 @@ const SYMBOLS = {
     draw(ctx){ ctx.beginPath(); ctx.moveTo(-30,0);ctx.lineTo(-5,0); ctx.moveTo(-5,-11);
       ctx.lineTo(-5,11); ctx.moveTo(5,-11);ctx.lineTo(5,11); ctx.moveTo(5,0);ctx.lineTo(30,0);
       ctx.stroke(); } },
+  cap_pol:{ label:'Elco / gepol. cap (+/−)', prefix:'C', defValue:'10uF', defFp:()=>'C0805',
+    polarity:{'1':'+','2':'-'}, polarized:true,
+    pins:()=>[{num:'1',name:'+',x:-30,y:0},{num:'2',name:'-',x:30,y:0}],
+    draw(ctx){ ctx.beginPath(); ctx.moveTo(-30,0);ctx.lineTo(-6,0); ctx.moveTo(-6,-11);
+      ctx.lineTo(-6,11);                                   // straight plate (+)
+      ctx.moveTo(8,-11); ctx.quadraticCurveTo(2,0,8,11);   // curved plate (−)
+      ctx.moveTo(6,0);ctx.lineTo(30,0); ctx.stroke(); } },
   led:{ label:'LED', prefix:'D', defValue:'LED', defFp:()=>'C0805',
+    polarity:{'1':'+','2':'-'}, polarized:true,
     pins:()=>[{num:'1',name:'A',x:-30,y:0},{num:'2',name:'K',x:30,y:0}],
     draw(ctx){ ctx.beginPath(); ctx.moveTo(-30,0);ctx.lineTo(-10,0);
       ctx.moveTo(-10,-11);ctx.lineTo(-10,11);ctx.lineTo(10,0);ctx.closePath();
@@ -267,6 +275,7 @@ const SYMBOLS = {
       ctx.beginPath();ctx.moveTo(6,-14);ctx.lineTo(13,-20);ctx.moveTo(11,-15);ctx.lineTo(16,-19);
       ctx.stroke(); } },
   diode:{ label:'Diode', prefix:'D', defValue:'1N4148', defFp:()=>'C0805',
+    polarity:{'1':'+','2':'-'}, polarized:true,
     pins:()=>[{num:'1',name:'A',x:-30,y:0},{num:'2',name:'K',x:30,y:0}],
     draw(ctx){ ctx.beginPath(); ctx.moveTo(-30,0);ctx.lineTo(-10,0);
       ctx.moveTo(-10,-11);ctx.lineTo(-10,11);ctx.lineTo(10,0);ctx.closePath();
@@ -529,6 +538,18 @@ function drawComponent(c,selected){
   const pins=compPins(c);
   ctx.fillStyle='#ff8c69';
   for(const p of pins){ const ps=w2s(p.x,p.y); ctx.beginPath();ctx.arc(ps.x,ps.y,2.6,0,7);ctx.fill(); }
+  // polarity glyphs (+/−) for polarized parts
+  const pol=SYMBOLS[c.type].polarity;
+  if(pol && v.scale>1.3){ const cs=w2s(c.x,c.y);
+    ctx.font='700 14px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    for(const p of pins){ const sym=pol[p.num]; if(!sym)continue;
+      const ps=w2s(p.x,p.y);
+      // nudge the glyph toward the component body so it stays readable
+      const dx=cs.x-ps.x, dy=cs.y-ps.y, L=Math.hypot(dx,dy)||1;
+      const gx=ps.x+dx/L*13, gy=ps.y+dy/L*13-9;
+      ctx.fillStyle=sym==='+'?'#ff6b6b':'#7fb2ff';
+      ctx.fillText(sym, gx, gy); }
+    ctx.textBaseline='alphabetic'; ctx.textAlign='left'; }
   if(selected){ const b=compBounds(c); const a=w2s(b.minx-4,b.miny-4),d=w2s(b.maxx+4,b.maxy+4);
     ctx.strokeStyle='#ffd24a';ctx.lineWidth=1;ctx.setLineDash([4,3]);
     ctx.strokeRect(a.x,a.y,d.x-a.x,d.y-a.y);ctx.setLineDash([]); }
@@ -615,12 +636,27 @@ function drawFootprint(f,selected){
     if(v.scale>14){ ctx.fillStyle='#111';ctx.font='700 9px sans-serif';ctx.textAlign='center';
       ctx.fillText(p.num,ps.x,ps.y+3);ctx.textAlign='left'; }
   }
+  // polarity markers (+/−) on silk for polarized footprints
+  const pol=fpPolarity(f);
+  if(pol && v.scale>7){ ctx.font='700 13px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+    for(const p of pads){ const sym=pol[p.num]; if(!sym)continue; const ps=w2s(p.x,p.y);
+      const dx=(ps.x-s.x)||1; const off=Math.max(p.w,p.h)*v.scale/2+8;
+      ctx.fillStyle=sym==='+'?'#ff6b6b':'#7fb2ff';
+      ctx.fillText(sym, s.x+Math.sign(dx)*off, ps.y); }
+    ctx.textBaseline='alphabetic';ctx.textAlign='left'; }
   // ref label
   if(v.scale>6){ ctx.fillStyle=selected?'#ffd24a':'#e8eef6';ctx.font='600 11px sans-serif';
     ctx.textAlign='center';
     ctx.fillText(f.ref||'?', s.x, s.y-def.body.h*v.scale/2-4);ctx.textAlign='left'; }
 }
 // pad connectivity & ratsnest
+function compById(id){ return state.project.sch.components.find(c=>c.id===id); }
+function fpPolarity(f){
+  if(f.componentId){ const c=compById(f.componentId);
+    if(c&&SYMBOLS[c.type]) return SYMBOLS[c.type].polarity||null; }
+  if(f.type==='LED-3MM') return {'1':'+','2':'-'};
+  return null;
+}
 function padNet(f,padNum){ if(!f.componentId)return f.netOverride&&f.netOverride[padNum]||null;
   return nets().pinNet.get(f.componentId+':'+padNum)||null; }
 function allPads(){ const out=[]; for(const f of state.project.pcb.footprints)
@@ -980,7 +1016,7 @@ function buildSidebar(){
         onclick:()=>{state.placePart=null;setTool('select');}},el('span',{text:'✕ Stop met plaatsen'})));
       sb.append(card);
     }
-    const comps=['resistor','capacitor','led','diode','ic','connector','generic2','genericN'];
+    const comps=['resistor','capacitor','cap_pol','led','diode','ic','connector','generic2','genericN'];
     sb.append(toolGroup('Plaats kaal symbool', comps.map(t=>
       toolBtn('＋',SYMBOLS[t].label,'place-'+t,
         state.tool.sch==='place'&&state.placeType===t,
@@ -1176,7 +1212,8 @@ function partToSymbol(p){
   const cat=(p.cat||'X').toString().toUpperCase();
   const padCount=()=>{ try{ return makeFootprint(p.fp).pads.length; }catch(e){ return 2; } };
   if(cat==='R') return {type:'resistor'};
-  if(cat==='C') return {type:'capacitor'};
+  if(cat==='C'){ const s=((p.value||'')+' '+(p.desc||'')).toLowerCase();
+    return {type:/elco|electrolyt|tantal|polarized|gepol/.test(s)?'cap_pol':'capacitor'}; }
   if(cat==='D'){ const s=((p.value||'')+' '+(p.desc||'')).toLowerCase();
     return {type:/led/.test(s)?'led':'diode'}; }
   if(cat==='J') return {type:'connector', pinCount:Math.max(2,padCount())};
@@ -1300,11 +1337,7 @@ function buildBomView(){
   return wrap;
 }
 function exportBomCsv(){ // JLCPCB SMT assembly format
-  const rows=buildBom();
-  let csv='Comment,Designator,Footprint,"LCSC Part #"\n';
-  for(const r of rows){ csv+=[csvq(r.value||r.desc),csvq(r.refs.join(',')),
-    csvq(r.footprint),csvq(r.part)].join(',')+'\n'; }
-  download('BOM_JLCPCB.csv',csv,'text/csv');
+  download('BOM_JLCPCB.csv',bomJlcpcbString(),'text/csv');
 }
 function exportBomDetailedCsv(){
   const rows=buildBom();
@@ -1357,26 +1390,165 @@ function exportPcbJson(){
       points:t.points.map(p=>({x:fmt(p.x,3),y:fmt(p.y,3)}))})) };
   return JSON.stringify(o,null,2);
 }
+/* ---------------- Fabrication export: Gerber (RS-274X) + Excellon drill + CPL ---------------- */
+function fabBase(){ return (state.project.meta.name||'pcb').replace(/[^\w.-]+/g,'_'); }
+function gNum(mm){ return Math.round(mm*1e6).toString(); }     // FSLAX46 = 6 decimals, mm
+function fabPads(){ const out=[];
+  for(const f of state.project.pcb.footprints){ for(const p of fpPads(f))
+    out.push({f,num:p.num,x:p.x,y:p.y,shape:p.shape,w:p.w,h:p.h,drill:p.drill,layers:p.layers}); }
+  return out; }
+// minimal Gerber writer. Y is negated so the output isn't upside-down vs the editor.
+function makeGerber(){
+  const aps=[]; const apMap=new Map(); const body=[]; let cur=-1;
+  function getAp(def){ if(apMap.has(def))return apMap.get(def);
+    const id=10+aps.length; aps.push({id,def}); apMap.set(def,id); return id; }
+  function sel(id){ if(cur!==id){ body.push('D'+id+'*'); cur=id; } }
+  return {
+    circleAp:d=>getAp('C,'+(+(+d).toFixed(4))),
+    rectAp:(w,h)=>getAp('R,'+(+w.toFixed(4))+'X'+(+h.toFixed(4))),
+    flash(id,x,y){ sel(id); body.push('X'+gNum(x)+'Y'+gNum(-y)+'D03*'); },
+    line(id,x1,y1,x2,y2){ sel(id); body.push('X'+gNum(x1)+'Y'+gNum(-y1)+'D02*');
+      body.push('X'+gNum(x2)+'Y'+gNum(-y2)+'D01*'); },
+    poly(id,pts){ if(pts.length<2)return; sel(id);
+      body.push('X'+gNum(pts[0].x)+'Y'+gNum(-pts[0].y)+'D02*');
+      for(let i=1;i<pts.length;i++) body.push('X'+gNum(pts[i].x)+'Y'+gNum(-pts[i].y)+'D01*'); },
+    render(name){ let s='G04 '+name+' generated by PCB Studio*\n';
+      s+='%FSLAX46Y46*%\n%MOMM*%\n%LPD*%\nG01*\n';
+      for(const a of aps) s+='%ADD'+a.id+a.def+'*%\n';
+      if(body.length) s+=body.join('\n')+'\n'; s+='M02*\n'; return s; }
+  };
+}
+function gerberCopper(layer){ const g=makeGerber();
+  for(const t of state.project.pcb.traces){ if(t.layer!==layer)continue;
+    g.poly(g.circleAp(t.width), t.points); }
+  for(const p of fabPads()){ if(!p.layers.includes(layer))continue;
+    g.flash(p.shape==='rect'?g.rectAp(p.w,p.h):g.circleAp(p.w), p.x, p.y); }
+  return g.render(layer+' copper'); }
+function gerberMask(layer){ const g=makeGerber(); const e=0.1; // soldermask expansion
+  for(const p of fabPads()){ if(!p.layers.includes(layer))continue;
+    g.flash(p.shape==='rect'?g.rectAp(p.w+e,p.h+e):g.circleAp(p.w+e), p.x, p.y); }
+  return g.render(layer+' soldermask'); }
+function gerberSilk(layer){ const g=makeGerber(); const ap=g.circleAp(0.15);
+  for(const f of state.project.pcb.footprints){ const def=fpDef(f); const hw=def.body.w/2,hh=def.body.h/2;
+    g.poly(ap,[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh],[-hw,-hh]].map(([x,y])=>{
+      const r=rot(x,y,f.rot||0); return {x:f.x+r.x,y:f.y+r.y}; }));
+    const pol=fpPolarity(f); if(pol){ for(const p of fpPads(f)){ if(pol[p.num]==='+'){ const s=0.45;
+      g.line(ap,p.x-s,p.y,p.x+s,p.y); g.line(ap,p.x,p.y-s,p.x,p.y+s); } } }
+  }
+  return g.render(layer+' silkscreen'); }
+function gerberOutline(){ const g=makeGerber(); const ap=g.circleAp(0.1);
+  const o=state.project.pcb.outline||pcbBBox();
+  g.poly(ap,[[o.x,o.y],[o.x+o.w,o.y],[o.x+o.w,o.y+o.h],[o.x,o.y+o.h],[o.x,o.y]].map(([x,y])=>({x,y})));
+  return g.render('Edge cuts'); }
+function buildDrill(){
+  const holes=fabPads().filter(p=>p.drill>0).map(p=>({x:p.x,y:p.y,d:+p.drill.toFixed(3)}));
+  const tools=new Map(); let tno=1; const order=[];
+  for(const h of holes){ if(!tools.has(h.d)){ tools.set(h.d,tno++); order.push(h.d); } }
+  let s='M48\n;DRILL file generated by PCB Studio\n;FORMAT={-:-/ absolute / metric / decimal}\nFMAT,2\nMETRIC\n';
+  for(const d of order) s+='T'+tools.get(d)+'C'+d.toFixed(3)+'\n';
+  s+='%\nG90\nG05\n';
+  for(const d of order){ s+='T'+tools.get(d)+'\n';
+    for(const h of holes){ if(h.d!==d)continue; s+='X'+h.x.toFixed(3)+'Y'+(-h.y).toFixed(3)+'\n'; } }
+  s+='T0\nM30\n'; return s;
+}
+function bomJlcpcbString(){ const rows=buildBom(); let csv='Comment,Designator,Footprint,"LCSC Part #"\n';
+  for(const r of rows) csv+=[csvq(r.value||r.desc),csvq(r.refs.join(',')),csvq(r.footprint),csvq(r.part)].join(',')+'\n';
+  return csv; }
+function cplString(){ let csv='Designator,Mid X,Mid Y,Layer,Rotation\n';
+  for(const f of state.project.pcb.footprints){
+    const ref=f.ref || (f.componentId&&compById(f.componentId)?compById(f.componentId).ref:'') ;
+    if(!ref)continue;
+    csv+=[ref, f.x.toFixed(3)+'mm', (-f.y).toFixed(3)+'mm', 'Top', ((f.rot||0)%360)].join(',')+'\n'; }
+  return csv; }
+function fabReadme(){ return [
+  'PCB Studio — fabricage-export','',
+  'Bevat: Gerber (RS-274X), Excellon-boorfile (.drl), assemblage-BOM en CPL (pick&place).',
+  'Eenheden: mm. Lagen (KiCad-stijl namen, JLCPCB herkent ze automatisch):',
+  '  *-F_Cu.gbr / *-B_Cu.gbr        top / bottom koper',
+  '  *-F_Mask.gbr / *-B_Mask.gbr    top / bottom soldermask',
+  '  *-F_Silkscreen.gbr             top silkscreen (courtyards + polariteit +)',
+  '  *-Edge_Cuts.gbr                board outline',
+  '  *.drl                          boringen (Excellon, metrisch)',
+  '  *-bom.csv                      BOM in JLCPCB-formaat',
+  '  *-cpl.csv                      pick&place / CPL in JLCPCB-formaat','',
+  'BELANGRIJK: best-effort export uit een MVP-tool. Controleer ALTIJD in een gratis',
+  'Gerber-viewer (bv. JLCPCB online viewer of KiCad GerbView) vóór je bestelt. Verifieer',
+  'vooral pad-vormen, drill-maten en — bij assemblage — de CPL-rotaties per onderdeel.'
+].join('\n'); }
+function buildFabFiles(){ const b=fabBase(); return [
+  {name:b+'-F_Cu.gbr',       text:gerberCopper('top')},
+  {name:b+'-B_Cu.gbr',       text:gerberCopper('bottom')},
+  {name:b+'-F_Mask.gbr',     text:gerberMask('top')},
+  {name:b+'-B_Mask.gbr',     text:gerberMask('bottom')},
+  {name:b+'-F_Silkscreen.gbr',text:gerberSilk('top')},
+  {name:b+'-Edge_Cuts.gbr',  text:gerberOutline()},
+  {name:b+'.drl',            text:buildDrill()},
+  {name:b+'-bom.csv',        text:bomJlcpcbString()},
+  {name:b+'-cpl.csv',        text:cplString()},
+  {name:'README.txt',        text:fabReadme()},
+]; }
+// --- pure-JS ZIP (stored / no compression) ---
+const _crcTable=(()=>{ const t=new Uint32Array(256); for(let n=0;n<256;n++){ let c=n;
+  for(let k=0;k<8;k++) c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1); t[n]=c>>>0; } return t; })();
+function crc32(bytes){ let c=0xFFFFFFFF; for(let i=0;i<bytes.length;i++) c=_crcTable[(c^bytes[i])&0xFF]^(c>>>8);
+  return (c^0xFFFFFFFF)>>>0; }
+function zipStore(files){
+  const u16=n=>[n&255,(n>>8)&255]; const u32=n=>[n&255,(n>>8)&255,(n>>16)&255,(n>>24)&255];
+  const enc=files.map(f=>({name:new TextEncoder().encode(f.name),data:new TextEncoder().encode(f.text)}));
+  const parts=[]; const central=[]; let offset=0;
+  for(const f of enc){ const crc=crc32(f.data), sz=f.data.length;
+    const lh=new Uint8Array([].concat(u32(0x04034b50),u16(20),u16(0),u16(0),u16(0),u16(0),
+      u32(crc),u32(sz),u32(sz),u16(f.name.length),u16(0)));
+    parts.push(lh,f.name,f.data);
+    const ch=new Uint8Array([].concat(u32(0x02014b50),u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),
+      u32(crc),u32(sz),u32(sz),u16(f.name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset)));
+    central.push(ch,f.name);
+    offset+=lh.length+f.name.length+f.data.length;
+  }
+  let cenSize=0; central.forEach(c=>cenSize+=c.length);
+  const end=new Uint8Array([].concat(u32(0x06054b50),u16(0),u16(0),u16(enc.length),u16(enc.length),
+    u32(cenSize),u32(offset),u16(0)));
+  const all=[...parts,...central,end]; let total=0; all.forEach(a=>total+=a.length);
+  const out=new Uint8Array(total); let pos=0; for(const a of all){ out.set(a,pos); pos+=a.length; }
+  return out;
+}
+function exportFabZip(){ const bytes=zipStore(buildFabFiles());
+  const blob=new Blob([bytes],{type:'application/zip'}); const url=URL.createObjectURL(blob);
+  const a=el('a',{href:url,download:fabBase()+'_gerber.zip'}); document.body.append(a); a.click();
+  setTimeout(()=>{a.remove();URL.revokeObjectURL(url);},100); }
+
 function openExport(){
   runDRC();
   const body=el('div');
-  body.append(el('div',{class:'warnbox',html:
-    '⚠ Dit is <b>GEEN fabricage-ready Gerber</b>. SVG = visuele referentie van koperlagen, JSON = ruwe coördinaten. Voor productie heb je echte Gerber/drill-bestanden nodig (toekomstige feature).'}));
+  body.append(el('div',{class:'okbox',html:
+    '<b>Fabricage-export (JLCPCB-klaar):</b> Gerber + boorfile + BOM + CPL als één ZIP. ' +
+    'Best-effort uit een MVP-tool — <b>controleer altijd in een Gerber-viewer vóór je bestelt</b> ' +
+    '(pad-vormen, drill-maten, en bij assemblage de CPL-rotaties).'}));
+  if(!state.project.pcb.outline) body.append(el('div',{class:'warnbox',
+    text:'Geen board-outline getekend — er wordt automatisch een bounding-box gebruikt. Teken een outline voor een exacte vorm.'}));
   if(state.drc.length) body.append(el('div',{class:'warnbox',
     text:'Let op: '+state.drc.length+' open DRC-waarschuwing(en).'}));
   body.append(el('div',{class:'row'},[
-    el('button',{onclick:()=>download('pcb_top.svg',exportSVG('top'),'image/svg+xml')},el('span',{text:'⤓ Top copper (SVG)'})),
-    el('button',{onclick:()=>download('pcb_bottom.svg',exportSVG('bottom'),'image/svg+xml')},el('span',{text:'⤓ Bottom copper (SVG)'})),
+    el('button',{class:'on',onclick:exportFabZip},el('span',{text:'⤓ Gerber + drill + BOM + CPL (ZIP)'})),
+  ]));
+  body.append(el('div',{class:'row',style:'margin-top:6px'},[
+    el('button',{onclick:()=>download(fabBase()+'-bom.csv',bomJlcpcbString(),'text/csv')},el('span',{text:'⤓ BOM (JLCPCB CSV)'})),
+    el('button',{onclick:()=>download(fabBase()+'-cpl.csv',cplString(),'text/csv')},el('span',{text:'⤓ CPL / Pick&Place (CSV)'})),
+    el('button',{onclick:()=>download(fabBase()+'.drl',buildDrill(),'text/plain')},el('span',{text:'⤓ Drill (Excellon)'})),
+  ]));
+  body.append(el('div',{class:'small',style:'margin:10px 0 2px',text:'Visuele referentie / overige formaten:'}));
+  body.append(el('div',{class:'row'},[
+    el('button',{onclick:()=>download('pcb_top.svg',exportSVG('top'),'image/svg+xml')},el('span',{text:'⤓ Top (SVG)'})),
+    el('button',{onclick:()=>download('pcb_bottom.svg',exportSVG('bottom'),'image/svg+xml')},el('span',{text:'⤓ Bottom (SVG)'})),
     el('button',{onclick:()=>download('pcb_layout.json',exportPcbJson(),'application/json')},el('span',{text:'⤓ Layout (JSON)'})),
   ]));
   const prev=el('div',{style:'margin-top:12px;display:flex;gap:10px;flex-wrap:wrap'});
   prev.innerHTML='<div><div class="small">Top</div>'+exportSVG('top')+'</div>'+
                  '<div><div class="small">Bottom</div>'+exportSVG('bottom')+'</div>';
-  // scale previews down
   prev.querySelectorAll('svg').forEach(s=>{s.style.maxWidth='320px';s.style.height='auto';
     s.style.border='1px solid var(--line)';s.style.borderRadius='6px';});
   body.append(prev);
-  openModal('Export PCB',body);
+  openModal('Export PCB — fabricage',body);
 }
 function exportProject(){ download((state.project.meta.name||'project')+'.pcbstudio.json',
   JSON.stringify(state.project,null,2),'application/json'); }
@@ -1499,6 +1671,10 @@ window.PCB={ state, nets:()=>nets(), computeNets, generateFootprints, runDRC,
     state.netsDirty=true; return l; },
   partToSymbol, getLcsc:()=>LCSC,
   addPart:(p)=>{ LCSC.push(p); saveLcsc(LCSC); return p; },
+  fabFiles:()=>{ const o={}; for(const f of buildFabFiles())o[f.name]=f.text; return o; },
+  cplString, bomJlcpcbString, buildDrill,
+  fabZipB64:()=>{ const b=zipStore(buildFabFiles()); let s=''; const C=0x8000;
+    for(let i=0;i<b.length;i+=C) s+=String.fromCharCode.apply(null,b.subarray(i,i+C)); return btoa(s); },
   placeFromPart:(part,x,y)=>{ state.placePart=part; state.placeType='part';
     placeComponentAt({x,y}); const c=state.project.sch.components.slice(-1)[0];
     state.placePart=null; state.placeType=null; return c; },
