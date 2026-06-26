@@ -74,7 +74,19 @@ back-up te maken of tussen apparaten te wisselen.
 dus live opzoeken vanuit een WebView is onbetrouwbaar. Daarom:
 - Een **lokale, handmatig samengestelde dataset** van veelgebruikte onderdelen (passieven in
   standaardwaarden, een paar populaire IC's, connectors) met LCSC-partnummer, prijsindicatie en
-  footprint-match.
+  footprint-match — meteen offline bruikbaar als starter-set.
+- **Volledige catalogus importeren (offline).** Wil je *alle* LCSC-parts? Download eenmalig een
+  LCSC/JLCPCB onderdelen-CSV (bv. de JLCPCB *SMT Assembly Parts*-lijst of een export van het
+  `jlcparts`-project) en importeer hem via *Plaats onderdeel → ⤓ Importeer volledige catalogus*.
+  De data gaat in **IndexedDB** (niet localStorage — dat is te klein), schaalt naar
+  **honderdduizenden** onderdelen en werkt daarna **volledig offline**; niets wordt geüpload.
+  Kolommen worden automatisch herkend (LCSC #, MFR.Part, Package, Category, Manufacturer,
+  Description, Price). Categorie + package worden best-effort naar symbool en footprint gemapt,
+  zodat een geïmporteerd onderdeel meteen plaatsbaar is en in de BOM komt. Zoeken doorzoekt
+  ingebouwde set én geïmporteerde catalogus samen (gededupliceerd op partnummer).
+  > Waarom geen ingebouwde 600k-lijst? Dat past niet in één HTML-bestand of in localStorage, en
+  > ik verzin **geen partnummers**. De ingebouwde set blijft klein en eerlijk; "alles" komt
+  > binnen via de import van échte LCSC/JLCPCB-data.
 - Een **formulier om zelf onderdelen toe te voegen** (naam, partnummer, prijs, footprint), bewaard
   in je eigen lokale database.
 
@@ -95,10 +107,12 @@ Verder:
 ---
 
 ## Hoe het is getest
-De app is in headless Chromium (via het Chrome DevTools Protocol) end-to-end gedreven: 27 checks
+De app is in headless Chromium (via het Chrome DevTools Protocol) end-to-end gedreven: checks
 op netberekening, footprint-geometrie (pad-aantallen per type), DRC, pointer-gestuurd plaatsen/
-slepen/draden, LCSC→BOM-koppeling, save/load round-trip en export — plus visuele controle van
-schema, PCB, BOM en modals. Geen console-/runtime-fouten.
+slepen/draden, LCSC→BOM-koppeling, save/load round-trip en export — plus een aparte suite van
+35 checks op de **catalogus-import** (CSV-parsing, kolomherkenning, categorie-/footprint-mapping,
+IndexedDB-import/zoek/lookup, persistentie na reload, plaatsen vanuit catalogus) en visuele
+controle van schema, PCB, BOM en de picker-/import-modals. Geen console-/runtime-fouten.
 
 ---
 
@@ -121,8 +135,10 @@ Dit is een MVP. De belangrijkste beperkingen, zodat je weet wat je kunt verwacht
 6. **Board outline = alleen rechthoek.** Geen polygon/uitsparingen/mounting holes als feature.
 7. **Schematic capture is licht.** Geen hiërarchische sheets, bussen, power-symbolen, ERC,
    of multi-unit componenten; netten worden puur geometrisch afgeleid.
-8. **Geen echte voorraad/prijs-API.** LCSC-data is een handmatige momentopname; geen live
-   beschikbaarheid of staffelprijzen.
+8. **Geen echte voorraad/prijs-API.** Je kunt de volledige LCSC/JLCPCB-catalogus *importeren*
+   (offline, IndexedDB), maar dat blijft een **statische CSV-momentopname** — geen live
+   beschikbaarheid of staffelprijzen, en de symbool-/footprint-mapping van geïmporteerde parts
+   is best-effort (alleen de package-families die de footprint-bibliotheek kent).
 9. **Schaal.** Net-engine en DRC zijn O(n²)-achtig; prima voor kleine/middelgrote bordjes,
    niet voor honderden componenten.
 10. **Mobiel.** Werkt op telefoon maar is krap; **tablet is het realistische doel** voor
